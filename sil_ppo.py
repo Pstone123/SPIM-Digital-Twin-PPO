@@ -32,7 +32,7 @@ class SPIMSILEnv(gym.Env):
         self.min_speed  = 400.0
         self.max_speed  = 1480.0
         self.max_steps  = 20
-        self.step_dt    = 0.5
+        self.step_dt    = 0.2
         self.action_space = spaces.Box(
             low=np.array([0.0], dtype=np.float32),
             high=np.array([1.0], dtype=np.float32))
@@ -77,7 +77,7 @@ set_param('{MODEL}', 'StopTime', '{t_end:.4f}');
 out = sim('{MODEL}');
 """, nargout=0)
 
-        speed_raw  = eng.eval("mean(out.wm_log(max(1,end-5000):end))", nargout=1)
+        speed_raw  = eng.eval("mean(out.wm_log(max(1,end-2000):end))", nargout=1)
         next_speed = float(np.clip(speed_raw, self.min_speed, self.max_speed))
         self.sim_time      = t_end
         self.current_speed = next_speed
@@ -88,10 +88,8 @@ out = sim('{MODEL}');
         prev_abs  = abs(self.prev_error)
         rng       = self.max_speed - self.min_speed
 
-        # Schafer 2024: base = negative absolute error
         reward = -abs_error / rng
 
-        # Saha 2023: inverse proximity bonus
         if abs_error < 1.0:
             reward += 2.0
         elif abs_error < 20.0:
@@ -99,24 +97,20 @@ out = sim('{MODEL}');
         elif abs_error < 100.0:
             reward += 0.5 / max(abs_error, 0.1)
 
-        # Phuong 2026: reward improvement
         if abs_error < prev_abs:
             reward += 0.5
         else:
             reward -= 0.2
 
-        # Rajamallaiah 2025: penalise large action changes
         action_change = abs(a - self.prev_action)
         reward -= 0.1 * action_change
         self.prev_action = a
 
-        # Saha 2023: terminate if too far
         too_far = abs_error > 0.65 * rng
         done    = (self.step_count >= self.max_steps) or too_far
         self.prev_error = error
         return self._get_obs(), reward, done, False, {}
 
-# Test environment
 print('\nTesting SIL environment...')
 env_test = SPIMSILEnv()
 obs, _ = env_test.reset()
@@ -126,17 +120,15 @@ obs, r, done, _, _ = env_test.step(np.array([0.5]))
 print(f'After action 0.5: speed={env_test.current_speed:.1f} RPM | reward={r:.4f}')
 print('Environment test passed')
 
-# Train PPO — 20,000 steps based on literature
 print('\nStarting PPO SIL v3 training...')
-print('20,000 timesteps — approximately 6-8 hours')
-print('Best run overnight')
+print('3,000 timesteps — approximately 6-8 hours overnight')
 
 env_train = Monitor(SPIMSILEnv())
 ppo = PPO(
     policy        = 'MlpPolicy',
     env           = env_train,
     learning_rate = 3e-4,
-    n_steps       = 512,
+    n_steps       = 256,
     batch_size    = 64,
     n_epochs      = 10,
     gamma         = 0.99,
@@ -147,13 +139,12 @@ ppo = PPO(
 )
 
 start = time.time()
-ppo.learn(total_timesteps=20000)
+ppo.learn(total_timesteps=3000)
 elapsed = time.time() - start
 print(f'\nTraining complete in {elapsed:.0f} seconds')
 ppo.save('C:\\Users\\MaMak\\Desktop\\SPIM_SIL\\ppo_sil_v3')
 print('PPO v3 saved')
 
-# Evaluate
 print('\nEvaluating PPO SIL v3...')
 test_targets = [600, 800, 1000, 1200, 1400]
 errors = []
