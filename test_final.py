@@ -18,16 +18,16 @@ class ForwardModel(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-fm = ForwardModel()
 ckpt = torch.load('C:/Users/MaMak/forward_model.pth',
                    map_location='cpu', weights_only=False)
-fm.load_state_dict(ckpt['model_state_dict'])
+print('Keys in checkpoint:', list(ckpt.keys()))
+
+fm = ForwardModel()
+fm.load_state_dict(ckpt['model'])
 fm.eval()
 
-with open('C:/Users/MaMak/scaler_in.pkl', 'rb') as f:
-    scaler_in = pickle.load(f)
-with open('C:/Users/MaMak/scaler_out.pkl', 'rb') as f:
-    scaler_out = pickle.load(f)
+scaler_in  = ckpt['scaler_in']
+scaler_out = ckpt['scaler_out']
 
 print('Forward model and scalers loaded')
 
@@ -79,74 +79,3 @@ class SPIMForwardEnv(gym.Env):
     def step(self, action):
         a   = float(np.clip(action[0], 0.0, 1.0))
         ma  = 0.4 + a * 0.6
-        v   = ma * 230
-        cs  = float(np.clip(self._ds(self.state[0]),
-                            self.min_speed, self.max_speed))
-        im  = float(scaler_out.inverse_transform(
-                    [[0, self.state[1], 0, 0]])[0,1])
-        ia  = float(scaler_out.inverse_transform(
-                    [[0, 0, self.state[2], 0]])[0,2])
-        tq  = float(scaler_out.inverse_transform(
-                    [[0, 0, 0, self.state[3]]])[0,3])
-        row = scaler_in.transform([[v, cs, im, ia, tq]])[0]
-        with torch.no_grad():
-            self.state = fm(torch.FloatTensor(row).unsqueeze(0)).numpy()[0]
-        next_speed = float(np.clip(self._ds(self.state[0]),
-                                    self.min_speed, self.max_speed))
-        self.step_count += 1
-        error    = abs(self.target_speed - next_speed)
-        prev_err = self.prev_error
-        reward   = -error / self.rng
-        if error < 1.0:    reward += 2.0
-        elif error < 20.0: reward += 1.0 / max(error, 0.1)
-        elif error < 80.0: reward += 0.3 / max(error, 0.1)
-        if error < prev_err: reward += 0.5
-        else:                reward -= 0.1
-        reward -= 0.05 * abs(a - self.prev_action)
-        if self.step_count % 50 == 0:
-            self.target_speed = float(np.random.uniform(600, 1400))
-        self.prev_error  = error
-        self.prev_action = a
-        done = self.step_count >= self.max_steps
-        return self._get_obs(), reward, done, False, {}
-
-ppo = PPO.load('C:/Users/MaMak/ppo_spim_final')
-print('PPO agent loaded')
-
-print('\nEvaluating PPO...')
-print('='*50)
-test_targets = [500, 700, 900, 1100, 1300]
-errors = []
-
-for target in test_targets:
-    env_eval = SPIMForwardEnv()
-    obs, _ = env_eval.reset()
-    env_eval.target_speed = float(target)
-    obs = env_eval._get_obs()
-    speeds = []
-    for _ in range(200):
-        action, _ = ppo.predict(obs, deterministic=True)
-        obs, _, done, _, _ = env_eval.step(action)
-        speed = float(np.clip(env_eval._ds(env_eval.state[0]),
-                              env_eval.min_speed, env_eval.max_speed))
-        speeds.append(speed)
-        if done: break
-    error = np.mean(np.abs(np.array(speeds[-50:]) - target))
-    errors.append(error)
-    print(f'Target {target:4d} RPM | Error: {error:6.2f} RPM')
-
-print(f'\nMean error: {np.mean(errors):.2f} RPM')
-
-print('\nAction analysis:')
-for target in [600, 900, 1200]:
-    env_eval = SPIMForwardEnv()
-    obs, _ = env_eval.reset()
-    env_eval.target_speed = float(target)
-    obs = env_eval._get_obs()
-    acts = []
-    for _ in range(20):
-        action, _ = ppo.predict(obs, deterministic=True)
-        obs, _, _, _, _ = env_eval.step(action)
-        acts.append(float(action[0]))
-    avg = np.mean(acts)
-    print(f'Target {target} RPM | Action: {avg:.4f} | Freq: {20+avg*30:.1f} Hz')
